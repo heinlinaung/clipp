@@ -107,6 +107,11 @@ final class ClipboardStore: ObservableObject {
         scheduleSave()
     }
 
+    func delete(_ item: ClipboardItem) {
+        items.removeAll { $0.id == item.id }
+        scheduleSave()
+    }
+
     private func scheduleSave() {
         saveTask?.cancel()
         saveTask = Task { [weak self] in

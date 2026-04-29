@@ -112,9 +112,14 @@ struct PaletteView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 12) {
                             ForEach(Array(filtered.enumerated()), id: \.element.id) { index, item in
-                                CardView(item: item, isSelected: index == selection, palette: palette)
-                                    .id(index)
-                                    .onTapGesture { onPick(item) }
+                                CardView(
+                                    item: item,
+                                    isSelected: index == selection,
+                                    palette: palette,
+                                    onDelete: { store.delete(item) }
+                                )
+                                .id(index)
+                                .onTapGesture { onPick(item) }
                             }
                         }
                         .padding(.horizontal, 16)
@@ -146,6 +151,8 @@ private struct CardView: View {
     let item: ClipboardItem
     let isSelected: Bool
     let palette: ThemePalette
+    let onDelete: () -> Void
+    @State private var hovering: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -161,14 +168,23 @@ private struct CardView: View {
                 .strokeBorder(isSelected ? palette.accent : palette.border,
                               lineWidth: isSelected ? 2 : 1)
         )
+        .onHover { hovering = $0 }
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 6) {
             Text(title)
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
-            Spacer()
+            Spacer(minLength: 0)
+            Button(action: onDelete) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering || isSelected ? 1 : 0)
+            .help("Delete")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
