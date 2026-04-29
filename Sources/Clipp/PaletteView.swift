@@ -235,8 +235,10 @@ private struct CardView: View {
             Divider().opacity(0.3)
             preview
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.cardFill)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(isSelected ? palette.accent : palette.border,
@@ -292,9 +294,8 @@ private struct CardView: View {
                 if let nsImage = NSImage(data: data) {
                     Image(nsImage: nsImage)
                         .resizable()
-                        .aspectRatio(contentMode: .fill)
+                        .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
                 }
             case .file(let url):
                 FilePreviewView(url: url, maxHeight: 170)
