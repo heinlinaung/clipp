@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+private let visibleBadgeLimit = 8
+private let cardHeight: CGFloat = 220
+private let cardSpacing: CGFloat = 12
+private let stripHorizontalPadding: CGFloat = 16
+
 struct PaletteView: View {
     @ObservedObject var store: ClipboardStore
     @ObservedObject private var themeManager = ThemeManager.shared
@@ -9,6 +14,7 @@ struct PaletteView: View {
 
     @State private var query: String = ""
     @State private var selection: Int = 0
+    @State private var visibleIDs: [UUID] = []
     @FocusState private var searchFocused: Bool
 
     private var palette: ThemePalette { themeManager.theme.palette }
@@ -22,6 +28,15 @@ struct PaletteView: View {
             case .image: return false
             }
         }
+    }
+
+    /// Maps the first 8 in-view items' IDs to a 1-based slot number.
+    private var numbering: [UUID: Int] {
+        var dict: [UUID: Int] = [:]
+        for (i, id) in visibleIDs.prefix(visibleBadgeLimit).enumerated() {
+            dict[id] = i + 1
+        }
+        return dict
     }
 
     var body: some View {
@@ -50,7 +65,8 @@ struct PaletteView: View {
             onLeft: { move(-1) },
             onRight: { move(1) },
             onReturn: { pickCurrent() },
-            onEscape: { onDismiss() }
+            onEscape: { onDismiss() },
+            onDigit: { digit in pickByNumber(digit) }
         ))
     }
 
@@ -108,30 +124,66 @@ struct PaletteView: View {
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
-                            ForEach(Array(filtered.enumerated()), id: \.element.id) { index, item in
-                                CardView(
-                                    item: item,
-                                    isSelected: index == selection,
-                                    palette: palette,
-                                    onDelete: { store.delete(item) }
-                                )
-                                .id(index)
-                                .onTapGesture { onPick(item) }
+                GeometryReader { geo in
+                    let cardWidth = max(120,
+                        (geo.size.width - stripHorizontalPadding * 2
+                            - cardSpacing * CGFloat(visibleBadgeLimit - 1))
+                        / CGFloat(visibleBadgeLimit))
+
+                    ScrollViewReader { proxy in
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: cardSpacing) {
+                                ForEach(Array(filtered.enumerated()), id: \.element.id) { index, item in
+                                    CardView(
+                                        item: item,
+                                        isSelected: index == selection,
+                                        slotNumber: numbering[item.id],
+                                        palette: palette,
+                                        onDelete: { store.delete(item) }
+                                    )
+                                    .frame(width: cardWidth, height: cardHeight)
+                                    .id(index)
+                                    .background(
+                                        GeometryReader { itemGeo in
+                                            Color.clear.preference(
+                                                key: VisibleItemsKey.self,
+                                                value: [VisibleItemFrame(
+                                                    id: item.id,
+                                                    minX: itemGeo.frame(in: .named("strip")).minX,
+                                                    maxX: itemGeo.frame(in: .named("strip")).maxX
+                                                )]
+                                            )
+                                        }
+                                    )
+                                    .onTapGesture { onPick(item) }
+                                }
+                            }
+                            .padding(.horizontal, stripHorizontalPadding)
+                            .padding(.vertical, 14)
+                        }
+                        .coordinateSpace(name: "strip")
+                        .onChange(of: selection) { new in
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                proxy.scrollTo(new, anchor: .center)
                             }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 14)
-                    }
-                    .onChange(of: selection) { new in
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo(new, anchor: .center)
+                        .onPreferenceChange(VisibleItemsKey.self) { frames in
+                            updateVisibleIDs(frames: frames, viewportWidth: geo.size.width)
                         }
                     }
                 }
             }
+        }
+    }
+
+    private func updateVisibleIDs(frames: [VisibleItemFrame], viewportWidth: CGFloat) {
+        // Keep cards whose center sits inside the viewport, ordered left-to-right.
+        let visible = frames
+            .filter { ($0.minX + $0.maxX) / 2 >= 0 && ($0.minX + $0.maxX) / 2 <= viewportWidth }
+            .sorted { $0.minX < $1.minX }
+            .map(\.id)
+        if visible != visibleIDs {
+            visibleIDs = visible
         }
     }
 
@@ -145,11 +197,34 @@ struct PaletteView: View {
         guard filtered.indices.contains(selection) else { return }
         onPick(filtered[selection])
     }
+
+    private func pickByNumber(_ n: Int) {
+        let visible = visibleIDs.prefix(visibleBadgeLimit)
+        guard n >= 1, n <= visible.count else { return }
+        let targetID = visible[visible.index(visible.startIndex, offsetBy: n - 1)]
+        if let item = filtered.first(where: { $0.id == targetID }) {
+            onPick(item)
+        }
+    }
+}
+
+private struct VisibleItemFrame: Equatable {
+    let id: UUID
+    let minX: CGFloat
+    let maxX: CGFloat
+}
+
+private struct VisibleItemsKey: PreferenceKey {
+    static var defaultValue: [VisibleItemFrame] = []
+    static func reduce(value: inout [VisibleItemFrame], nextValue: () -> [VisibleItemFrame]) {
+        value.append(contentsOf: nextValue())
+    }
 }
 
 private struct CardView: View {
     let item: ClipboardItem
     let isSelected: Bool
+    let slotNumber: Int?
     let palette: ThemePalette
     let onDelete: () -> Void
     @State private var hovering: Bool = false
@@ -160,7 +235,6 @@ private struct CardView: View {
             Divider().opacity(0.3)
             preview
         }
-        .frame(width: 200, height: 220)
         .background(palette.cardFill)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
@@ -168,6 +242,18 @@ private struct CardView: View {
                 .strokeBorder(isSelected ? palette.accent : palette.border,
                               lineWidth: isSelected ? 2 : 1)
         )
+        .overlay(alignment: .topTrailing) {
+            if let n = slotNumber {
+                Text("⌘\(n)")
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(palette.primaryText)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(palette.accent.opacity(0.85))
+                    .clipShape(Capsule())
+                    .padding(6)
+            }
+        }
         .onHover { hovering = $0 }
     }
 
@@ -186,7 +272,8 @@ private struct CardView: View {
             .opacity(hovering || isSelected ? 1 : 0)
             .help("Delete")
         }
-        .padding(.horizontal, 10)
+        .padding(.leading, 10)
+        .padding(.trailing, slotNumber != nil ? 56 : 10)
         .padding(.vertical, 8)
     }
 
@@ -246,6 +333,7 @@ private struct KeyEventHandling: NSViewRepresentable {
     let onRight: () -> Void
     let onReturn: () -> Void
     let onEscape: () -> Void
+    let onDigit: (Int) -> Void
 
     func makeNSView(context: Context) -> NSView {
         let v = KeyView()
@@ -253,6 +341,7 @@ private struct KeyEventHandling: NSViewRepresentable {
         v.onRight = onRight
         v.onReturn = onReturn
         v.onEscape = onEscape
+        v.onDigit = onDigit
         DispatchQueue.main.async { v.window?.makeFirstResponder(nil); _ = v }
         return v
     }
@@ -263,6 +352,7 @@ private struct KeyEventHandling: NSViewRepresentable {
         var onRight: (() -> Void)?
         var onReturn: (() -> Void)?
         var onEscape: (() -> Void)?
+        var onDigit: ((Int) -> Void)?
         private var monitor: Any?
 
         override func viewDidMoveToWindow() {
@@ -270,11 +360,20 @@ private struct KeyEventHandling: NSViewRepresentable {
             if monitor == nil, window != nil {
                 monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                     guard let self, self.window?.isKeyWindow == true else { return event }
+                    if event.modifierFlags.contains(.command) {
+                        if let chars = event.charactersIgnoringModifiers,
+                           let scalar = chars.unicodeScalars.first,
+                           let digit = Int(String(scalar)),
+                           digit >= 1, digit <= visibleBadgeLimit {
+                            self.onDigit?(digit)
+                            return nil
+                        }
+                    }
                     switch event.keyCode {
-                    case 123: self.onLeft?(); return nil   // ←
-                    case 124: self.onRight?(); return nil  // →
-                    case 53:  self.onEscape?(); return nil // esc
-                    case 36, 76: self.onReturn?(); return nil // return / numpad enter
+                    case 123: self.onLeft?(); return nil
+                    case 124: self.onRight?(); return nil
+                    case 53:  self.onEscape?(); return nil
+                    case 36, 76: self.onReturn?(); return nil
                     default: return event
                     }
                 }
